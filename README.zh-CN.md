@@ -34,7 +34,7 @@
 
 ## 运行时如何构建
 
-`Publish` 工作流每六小时运行一次，也可以手动触发。它在每个平台的 GitHub 托管 Runner 上运行最新发布的 SKERNEL，用 SKERNEL 创建上述项目，并让 SKERNEL 像在你的机器上一样构建它们的运行时，使用的是 SKERNEL 固定版本的 static-php-cli，在 Linux 上还有固定版本的 Zig。随后它把尚未发布的运行时打包上传。已发布的运行时不会被替换。
+`Publish` 工作流每小时检查一次 SKERNEL、PHP 或 PECL 是否有新的发布改变了 SKERNEL 要构建的内容，有变化时才构建，也可以手动触发。它在每个平台的 GitHub 托管 Runner 上运行最新发布的 SKERNEL，用 SKERNEL 创建上述项目，并让 SKERNEL 像在你的机器上一样构建它们的运行时，使用的是 SKERNEL 固定版本的 static-php-cli，在 Linux 上还有固定版本的 Zig。随后它把尚未发布的运行时打包上传。已发布的运行时不会被替换。
 
 ## SKERNEL 如何校验运行时
 

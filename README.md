@@ -34,7 +34,7 @@ A project with another PHP version or other extensions is not covered. SKERNEL b
 
 ## How the runtimes are built
 
-The `Publish` workflow runs the latest SKERNEL release on GitHub-hosted runners of each platform, every six hours and on demand. It creates the projects above with SKERNEL and lets SKERNEL build their runtimes as it would on your machine, with its pinned releases of static-php-cli and, on Linux, Zig. It then packs each runtime that is not published yet and uploads it. A published runtime is never replaced.
+The `Publish` workflow checks every hour whether a SKERNEL, PHP, or PECL release changed what SKERNEL would build, and then runs the latest SKERNEL release on GitHub-hosted runners of each platform; it also runs on demand. It creates the projects above with SKERNEL and lets SKERNEL build their runtimes as it would on your machine, with its pinned releases of static-php-cli and, on Linux, Zig. It then packs each runtime that is not published yet and uploads it. A published runtime is never replaced.
 
 ## How SKERNEL verifies a runtime
 
