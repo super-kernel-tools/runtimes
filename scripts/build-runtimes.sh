@@ -9,11 +9,21 @@ skernel=$1
 work=$(mktemp -d)
 
 # SKERNEL runs its own Composer, whose PHP is one of the published runtimes, only when it finds no working Composer:
-# a stand-in that fails comes first in PATH, and an empty home hides the usual locations of a user's Composer.
+# stand-ins that fail come first in PATH under both names it looks for, and an empty home hides the usual locations
+# of a user's Composer.
 mkdir "$work/shim" "$work/home"
-printf '#!/bin/sh\nexit 1\n' >"$work/shim/composer"
-chmod +x "$work/shim/composer"
+
+for name in composer composer.phar; do
+    printf '#!/bin/sh\nexit 1\n' >"$work/shim/$name"
+    chmod +x "$work/shim/$name"
+done
+
 HOME="$work/home" PATH="$work/shim:$PATH" "$skernel" new "$work/app"
+
+if [ ! -d "$SKERNEL_HOME/tools/composer" ]; then
+    echo "SKERNEL found another Composer, so the PHP of its own Composer was not built." >&2
+    exit 1
+fi
 
 cp -R "$work/app" "$work/app-redis"
 composer require super-kernel/redis --working-dir="$work/app-redis" --no-interaction --no-progress \
