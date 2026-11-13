@@ -1,0 +1,127 @@
+name: Publish
+
+# Builds the runtimes with the latest SKERNEL release and publishes those that are not published yet. A pull request
+# that changes the process builds and packs every runtime without publishing anything.
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/publish.yml
+      - scripts/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+          - platform: linux-aarch64
+            runner: ubuntu-24.04-arm
+          - platform: macos-aarch64
+            runner: macos-15
+          - platform: macos-x86_64
+            runner: macos-15-intel
+    env:
+      # static-php-cli looks up its sources through the GitHub API, whose anonymous limit runners share.
+      GITHUB_TOKEN: ${{ github.token }}
+      GH_TOKEN: ${{ github.token }}
+      PLATFORM: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # This PHP only packs the archives and adds a package to a project; no runtime is built with it.
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: phar, zlib
+          tools: composer:v2
+
+      - name: Install the build tools on Linux
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y autoconf automake autopoint bison cmake flex gettext libtool re2c
+
+      - name: Install the build tools on macOS
+        if: runner.os == 'macOS'
+        run: |
+          brew install autoconf automake bison cmake gettext libtool re2c
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+
+      - name: Place the SKERNEL home
+        run: echo "SKERNEL_HOME=$RUNNER_TEMP/skernel-home" >> "$GITHUB_ENV"
+
+      # Runtimes built by an earlier run are reused, so a run builds only what changed since.
+      - uses: actions/cache@v6
+        with:
+          path: ${{ env.SKERNEL_HOME }}
+          key: skernel-home-${{ matrix.platform }}-${{ github.run_id }}
+          restore-keys: skernel-home-${{ matrix.platform }}-
+
+      - name: Download the latest SKERNEL
+        run: |
+          asset="skernel-$PLATFORM"
+          filter=".assets[] | select(.name == \"$asset\") | .digest"
+          digest=$(gh api repos/super-kernel-tools/skernel/releases/latest --jq "$filter")
+          gh release download --repo super-kernel-tools/skernel --pattern "$asset" --dir "$RUNNER_TEMP"
+
+          case "$RUNNER_OS" in
+            macOS) actual=$(shasum -a 256 "$RUNNER_TEMP/$asset" | cut -d ' ' -f 1) ;;
+            *) actual=$(sha256sum "$RUNNER_TEMP/$asset" | cut -d ' ' -f 1) ;;
+          esac
+
+          if [ "sha256:$actual" != "$digest" ]; then
+            echo "::error::$asset does not match the digest of its release."
+            exit 1
+          fi
+
+          chmod +x "$RUNNER_TEMP/$asset"
+          "$RUNNER_TEMP/$asset" --version
+
+      - name: Build the runtimes
+        run: scripts/build-runtimes.sh "$RUNNER_TEMP/skernel-$PLATFORM"
+
+      - name: Pack the runtimes
+        run: |
+          rm -rf "$SKERNEL_HOME/work"
+          php scripts/pack-runtimes.php "$SKERNEL_HOME/runtimes" dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: runtimes-${{ matrix.platform }}
+          path: dist
+          if-no-files-found: error
+
+  publish:
+    name: Publish the runtimes
+    needs: build
+    # The platforms that built are published even when another one failed.
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish what is not published yet
+        run: scripts/publish-runtimes.sh dist
