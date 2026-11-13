@@ -1,10 +1,11 @@
 name: Publish
 
-# Builds the runtimes with the latest SKERNEL release and publishes those that are not published yet. A pull request
-# that changes the process builds and packs every runtime without publishing anything.
+# Builds the runtimes with the latest SKERNEL release and publishes those that are not published yet. The hourly run
+# builds only when its inputs changed: a SKERNEL, PHP, or PECL release, or this repository. A manual run always
+# builds, and a pull request that changes the process builds and packs every runtime without publishing anything.
 on:
   schedule:
-    - cron: '23 */6 * * *'
+    - cron: '23 * * * *'
   workflow_dispatch:
   pull_request:
     paths:
@@ -19,8 +20,52 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  inputs:
+    name: Check the inputs
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+      contents: read
+    outputs:
+      changed: ${{ steps.compare.outputs.changed }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # GitHub disables a schedule after 60 days without repository activity, and a release is none. Enabling the
+      # workflow again is the common way to restart that count; whether it does is not documented.
+      - name: Keep the schedule enabled
+        if: github.event_name == 'schedule'
+        continue-on-error: true
+        run: gh api --method PUT "repos/$GH_REPO/actions/workflows/publish.yml/enable"
+
+      - name: Compare the inputs with those built last
+        id: compare
+        run: |
+          scripts/list-inputs.sh > inputs.txt
+          cat inputs.txt
+
+          if [ "$GITHUB_EVENT_NAME" = schedule ] \
+            && gh release download inputs --pattern inputs.txt --output built.txt 2>/dev/null \
+            && cmp -s inputs.txt built.txt; then
+            echo "The inputs are those built last."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: inputs
+          path: inputs.txt
+          if-no-files-found: error
+
   build:
     name: Build ${{ matrix.platform }}
+    needs: inputs
+    if: needs.inputs.outputs.changed == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
     strategy:
@@ -106,9 +151,11 @@ jobs:
 
   publish:
     name: Publish the runtimes
-    needs: build
+    needs:
+      - inputs
+      - build
     # The platforms that built are published even when another one failed.
-    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    if: ${{ !cancelled() && needs.inputs.outputs.changed == 'true' && github.event_name != 'pull_request' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -120,8 +167,25 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
+          pattern: runtimes-*
           path: dist
           merge-multiple: true
 
       - name: Publish what is not published yet
         run: scripts/publish-runtimes.sh dist
+
+      - uses: actions/download-artifact@v8
+        if: needs.build.result == 'success'
+        with:
+          name: inputs
+
+      # Only a run in which every platform built records its inputs, so the next hourly run retries a failure.
+      - name: Record the inputs as built
+        if: needs.build.result == 'success'
+        run: |
+          if ! gh release view inputs >/dev/null 2>&1; then
+            gh release create inputs --latest=false --title "Inputs built last" \
+              --notes "The inputs of the last run that built every runtime. SKERNEL does not read this release."
+          fi
+
+          gh release upload inputs inputs.txt --clobber
